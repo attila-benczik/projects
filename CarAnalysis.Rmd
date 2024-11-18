@@ -1,0 +1,772 @@
+---
+title: "DoneDealModels"
+output: pdf_document
+date: '2023-05-16'
+---
+
+This is a comparitive study on the change of price of used cars under 7000 euro in Ireland between 2023 and 2024, this study will also compare the differnce between the time it took to sell a car between the two years aswell and will also compare the results to other european countries. 
+
+
+Data and data cleaning
+
+```{r}
+library(tidyverse)
+library(moderndive)
+library(nlme)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(boot)
+library(broom)
+library(MASS)
+library(car)
+
+data<-read.csv("cardata_feb_apr_cleaned.csv")
+colnames(data)
+```
+
+```{r}
+
+data$NCT.Expiry[data$NCT.Expiry == '---'] <- NA
+
+data$NCT.Expiry <- parse_date_time(data$NCT.Expiry, orders = c("%b %Y"))
+
+data$Date.Uploaded <- parse_date_time(data$Date.Uploaded, orders = c("%Y-%m-%d", "%d-%m-%Y", "%b %Y"))  #
+
+# Calculate NCT.Duration as the difference in months between Date.Uploaded and NCT.Expiry
+data$NCT.Duration <- 
+  (as.numeric(format(data$Date.Uploaded, "%Y")) * 12 + as.numeric(format(data$Date.Uploaded, "%m"))) - 
+  (as.numeric(format(data$NCT.Expiry, "%Y")) * 12 + as.numeric(format(data$NCT.Expiry, "%m")))
+
+# Remove the "litre" string and convert to numeric / remove sizes less than 0.05 and more than 4
+data$Engine.Size..Litres. <- as.numeric(gsub("litre", "", data$Engine.Size..Litres.))
+data$Engine.Size..Litres.[data$Engine.Size..Litres. > 4 | data$Engine.Size..Litres. < 0.05] <- NA
+
+# Check the data type of the column
+str(data$Engine.Size..Litres.)
+
+data$Year<-data$Year-2000
+data$Mileage..km.<-data$Mileage..km./1000
+
+data$Model<-as.factor(data$Model)
+data$Fuel.Type<-as.factor(data$Fuel.Type)
+
+data$Previous.Owners <- as.numeric(data$Previous.Owners)
+
+data_NA <- data[complete.cases(data[c("Price", "Year", "Mileage..km.", "NCT.Duration", "Engine.Size..Litres.","Previous.Owners")]), ]
+
+# Create the Sold.Indicator column as a factor
+data_NA$Sold.Indicator <- factor(ifelse(data_NA$Date.Sold != "", 1, 0), 
+                                  levels = c(0, 1), 
+                                  labels = c("Not Sold", "Sold"))
+# Filter the data
+filtered_data_23 <- data_NA %>%
+  filter(Mileage..km. <= 500,
+         Mileage..km. > 10,
+         Price < 7000,
+         Price > 500,
+         NCT.Duration >= -30,
+         NCT.Duration <= 30) %>%
+  group_by(Model) %>%
+  filter(n() >= 10) %>%  # Keep only models with 10 or more entries
+  ungroup()
+```
+
+```{r}
+data_2024<-read.csv("cardata_Sept2024_cleaned.csv")
+
+head(data_2024)
+```
+
+
+
+
+```{r}
+# due to mistake while scraping NCT.Expiry is gone
+#data_2024$NCT.Expiry[data$NCT.Expiry == '---'] <- NA
+
+data_2024$Date.Uploaded <- parse_date_time(data_2024$Date.Uploaded, orders = c("%Y-%m-%d", "%d-%m-%Y", "%b %Y"))
+
+data_2024$Model<-as.factor(data_2024$Model)
+data_2024$Fuel.Type<-as.factor(data_2024$Fuel.Type)
+
+# Remove the "litre" string and convert to numeric / remove sizes less than 0.05 and more than 4
+data_2024$Engine.Size..Litres. <- as.numeric(gsub("L", "", gsub("[^0-9.]", "", data_2024$Engine.Size)))
+data_2024$Engine.Size..Litres.[data_2024$Engine.Size..Litres. > 4 | data_2024$Engine.Size..Litres. < 0.05] <- NA
+
+data_2024$Year<-data_2024$Year-2000
+data_2024$Mileage..km.<-data_2024$Mileage..km./1000
+
+data_2024$Previous.Owners <- as.numeric(data_2024$Previous.Owners)
+
+data_NA <- data_2024[complete.cases(data_2024[c("Price", "Year", "Mileage..km.", "Engine.Size..Litres.")]), ]
+
+# Create the Sold.Indicator column as a factor
+data_NA$Sold.Indicator <- factor(ifelse(data_NA$Date.Sold != "", 1, 0), 
+                                  levels = c(0, 1), 
+                                  labels = c("Not Sold", "Sold"))
+# Filter the data
+filtered_data_24 <- data_NA %>%
+  filter(Mileage..km. <= 500,
+         Mileage..km. > 10,
+         Price < 7000,
+         Price > 500
+         ) %>%
+  group_by(Model) %>%
+  filter(n() >= 10) %>%  # Keep only models with 10 or more entries
+  ungroup()  
+```
+
+
+```{r}
+# Add a DatasetYear column to distinguish between 2023 and 2024 datasets
+filtered_data_23 <- filtered_data_23 %>% mutate(DatasetYear = "2023")
+filtered_data_24 <- filtered_data_24 %>% mutate(DatasetYear = "2024")
+
+# Combine the two datasets
+combined_data <- bind_rows(filtered_data_23, filtered_data_24)
+
+```
+
+
+
+```{r}
+
+combined_data$Price <- as.numeric(combined_data$Price)
+
+# Calculate average price, standard error, and confidence intervals
+average_prices <- combined_data %>%
+  group_by(Model, DatasetYear) %>%
+  summarise(
+    Average_Price = mean(Price, na.rm = TRUE),
+    SE = sd(Price, na.rm = TRUE) / sqrt(n()),  # Standard error
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    CI_Lower = Average_Price - qt(0.975, df = n() - 1) * SE,
+    CI_Upper = Average_Price + qt(0.975, df = n() - 1) * SE
+  )
+
+# Split into two separate data frames for each year
+avg_2023 <- average_prices %>% filter(DatasetYear == "2023") %>%
+ dplyr:: select(Model=Model, Average_Price_2023 = Average_Price, 
+         CI_Lower_2023 = CI_Lower, CI_Upper_2023 = CI_Upper, SE_2023 = SE)
+
+avg_2024 <- average_prices %>% filter(DatasetYear == "2024") %>%
+  dplyr::select(Model, Average_Price_2024 = Average_Price, 
+         CI_Lower_2024 = CI_Lower, CI_Upper_2024 = CI_Upper, SE_2024 = SE)
+
+# Join the two data frames by Model to get a complete results data frame
+Results <- avg_2023 %>%
+  left_join(avg_2024, by = "Model") %>%
+  mutate(
+    Price_Difference = Average_Price_2024 - Average_Price_2023,
+    
+    # Calculate the standard error for the price difference
+    SE_Difference = sqrt(SE_2023^2 + SE_2024^2),  # Add variances for independent samples
+    
+    # Calculate the confidence interval for the difference
+    CI_Lower_Difference = Price_Difference - qt(0.975, df = n() - 1) * SE_Difference,
+    CI_Upper_Difference = Price_Difference + qt(0.975, df = n() - 1) * SE_Difference,
+
+    # Round and format the CIs
+    CI_2023 = paste0("(", round(CI_Lower_2023, 2), ", ", round(CI_Upper_2023, 2), ")"),
+    CI_2024 = paste0("(", round(CI_Lower_2024, 2), ", ", round(CI_Upper_2024, 2), ")"),
+    CI_Difference = paste0("(", round(CI_Lower_Difference, 2), ", ", round(CI_Upper_Difference, 2), ")")
+  ) %>%
+  dplyr::select(Model, Average_Price_2023, CI_2023, Average_Price_2024, CI_2024, Price_Difference, CI_Difference) %>%
+  filter(!is.na(Average_Price_2023) & !is.na(Average_Price_2024))  # Remove rows with NA average prices
+
+# Print the results
+print(Results)
+
+# Extract lower and upper bounds of the confidence interval for the price difference
+Results <- Results %>%
+  mutate(
+    CI_Lower_Difference = as.numeric(gsub("\\(", "", gsub(",.*", "", CI_Difference))),
+    CI_Upper_Difference = as.numeric(gsub(".*, ", "", gsub("\\)", "", CI_Difference)))
+  )
+
+# Filter models to keep only those with all positive or all negative confidence intervals
+filtered_results <- Results %>%
+  filter(CI_Lower_Difference > 0 | CI_Upper_Difference < 0)  # Keep models where CI is all positive or all negative
+
+# Create a boxplot for each filtered model
+models_to_plot <- filtered_results$Model
+
+# Create boxplots individually for each model
+for (model in models_to_plot) {
+  boxplot_data <- combined_data %>%
+    filter(Model == model) %>%
+    mutate(DatasetYear = factor(DatasetYear, levels = c("2023", "2024")))
+
+  p <- ggplot(boxplot_data, aes(x = DatasetYear, y = Price, fill = DatasetYear)) +
+    geom_boxplot() +
+    labs(title = paste("Price Distribution for", model),
+         x = "Year",
+         y = "Price") +
+    theme_minimal()
+
+  print(p)  # Print the boxplot
+}
+
+```
+
+
+```{r}
+
+# Step 1: Calculate the count and percentage for each model within each year
+model_counts <- combined_data %>%
+  group_by(DatasetYear, Model) %>%
+  summarise(model_count = n(), .groups = 'drop') %>%
+  left_join(combined_data %>% 
+              group_by(DatasetYear) %>% 
+              summarise(total_count = n(), .groups = 'drop'), 
+            by = "DatasetYear") %>%
+  mutate(percent = round(100 * model_count / total_count, 1))
+
+# Step 2: Get top 5 models per year
+top_models <- model_counts %>%
+  group_by(DatasetYear) %>%
+  slice_max(order_by = model_count, n = 5) %>%
+  ungroup()
+
+# Step 3: Filter data for the top models and add percentages
+filtered_data <- combined_data %>%
+  filter(Model %in% top_models$Model) %>%
+  left_join(model_counts, by = c("DatasetYear", "Model"))
+
+# Step 4: Plot boxplots for 2023 and 2024
+plot_boxplot <- function(year) {
+  filtered_data %>%
+    filter(DatasetYear == year) %>%
+    ggplot(aes(x = Model, y = Price, fill = Model)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_text(aes(y = max(Price) * 1.05, label = paste0(percent, "%")),
+              size = 3, color = "black", position = position_dodge(width = 0.75)) +
+    labs(title = paste("Price Distribution of Top 5 Car Models (", year, ")", sep = ""),
+         x = "Car Model", y = "Price (€)") +
+    theme_minimal() +
+    theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+# Plot for 2023 and 2024
+plot_boxplot(2023)
+plot_boxplot(2024)
+```
+
+
+
+```{r}
+# Step 1: Calculate percentage of each model per year and join with the original data
+combined_data_with_percent <- combined_data %>%
+  group_by(DatasetYear, Model) %>%
+  tally() %>%
+  group_by(DatasetYear) %>%
+  mutate(percent = round(100 * n / sum(n), 1)) %>%
+  ungroup() %>%
+  left_join(combined_data, by = c("DatasetYear", "Model"))
+
+# Step 2: Get the top 10 models per year
+top_models_per_year <- combined_data_with_percent %>%
+  group_by(DatasetYear, Model) %>%
+  tally() %>%
+  slice_max(order_by = n, n = 10) %>%
+  ungroup() %>%
+  pull(Model)
+
+# Step 3: Filter data to include only top 10 models per year
+filtered_top_models_data <- combined_data_with_percent %>%
+  filter(Model %in% top_models_per_year)
+
+# Step 4: Calculate the average price, mileage, percentage of listings, and average year of manufacture
+top_models_summary <- filtered_top_models_data %>%
+  group_by(DatasetYear, Model) %>%
+  summarize(
+    avg_price = mean(Price, na.rm = TRUE),
+    avg_mileage = mean(Mileage..km., na.rm = TRUE),
+    percent_listings = mean(percent, na.rm = TRUE),
+    avg_year = mean(Year, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# Step 1: Calculate the differences between 2023 and 2024
+difference_data <- top_models_summary %>%
+  filter(DatasetYear %in% c(2023, 2024)) %>%
+  pivot_wider(names_from = DatasetYear, values_from = c(avg_price, avg_mileage, percent_listings, avg_year)) %>%
+  mutate(
+    price_diff = avg_price_2024 - avg_price_2023,
+    mileage_diff = avg_mileage_2024 - avg_mileage_2023,
+    percent_listings_diff = percent_listings_2024 - percent_listings_2023,
+    year_diff = avg_year_2024 - avg_year_2023
+  )
+
+# Step 2: Display the dataset with differences
+difference_data
+
+```
+
+```{r}
+# Filter and reshape data
+difference_long <- difference_data %>%
+  filter(Model %in% c("Focus", "Golf", "Passat")) %>%
+  pivot_longer(cols = c(price_diff, mileage_diff, year_diff), 
+               names_to = "Metric", 
+               values_to = "Difference")
+
+# Function to plot differences
+plot_diff <- function(metric, y_label, title) {
+  ggplot(difference_long %>% filter(Metric == metric), 
+         aes(x = reorder(Model, Difference), y = Difference, fill = Metric)) +
+    geom_bar(stat = "identity", color = "black", show.legend = FALSE) +
+    labs(title = title, x = "Car Model", y = y_label) +
+    coord_flip() + 
+    theme_minimal() + 
+    theme(axis.text.x = element_text(hjust = 1))
+}
+
+# Generate plots
+plot_diff("price_diff", "Price Difference (€)", "Difference in Average Price (2024 vs 2023) by Model")
+plot_diff("mileage_diff", "Mileage Difference (km)", "Difference in Average Mileage (2024 vs 2023) by Model")
+plot_diff("year_diff", "Year Difference", "Difference in Average Year of Manufacture (2024 vs 2023) by Model")
+
+
+
+```
+
+```{r}
+# Step 1: Get the top 3 models by percent of listings for each year
+top_3_data <- combined_data %>%
+  group_by(DatasetYear, Model) %>%
+  tally() %>%
+  mutate(percent = round(100 * n / sum(n), 1)) %>%
+  slice_max(order_by = percent, n = 3) %>%
+  ungroup() %>%
+  inner_join(combined_data, by = c("DatasetYear", "Model"))
+
+# Step 2: Plot Price vs Mileage with regression line
+ggplot(top_3_data, aes(x = Mileage..km., y = Price, color = Model)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  labs(title = "Price vs Mileage for Top 3 Models", x = "Mileage (km)", y = "Price (€)") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  facet_wrap(~ Model)
+
+# Step 3: Plot Price vs Year of Manufacture with regression line
+ggplot(top_3_data, aes(x = Year, y = Price, color = Model)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  labs(title = "Price vs Year of Manufacture for Top 3 Models", x = "Year of Manufacture", y = "Price (€)") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  facet_wrap(~ Model)
+
+# Step 4: Plot Price distribution for Sold cars
+ggplot(top_3_data %>% filter(Sold.Indicator == "Sold"), aes(x = Model, y = Price, fill = Model)) +
+  geom_boxplot(outlier.shape = NA) +
+  labs(title = "Price Distribution for Sold Cars (Top 3 Models, Sold Indicator = Sold)", x = "Car Model", y = "Price (€)") +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Step 5: Plot Price distribution for Not Sold cars
+ggplot(top_3_data %>% filter(Sold.Indicator == "Not Sold"), aes(x = Model, y = Price, fill = Model)) +
+  geom_boxplot(outlier.shape = NA) +
+  labs(title = "Price Distribution for Not Sold Cars (Top 3 Models, Sold Indicator = Not Sold)", x = "Car Model", y = "Price (€)") +
+  theme_minimal() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+```{r}
+ggplot(top_3_data, aes(x = Price, fill = Model)) +
+  geom_density(alpha = 0.6) +
+  labs(title = "Price Density of all Cars by Model and Year", x = "Price (€)", y = "Density") +
+  theme_minimal() +
+  facet_grid(DatasetYear ~ Model) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(top_3_data %>% filter(Sold.Indicator == "Not Sold"), aes(x = Price, fill = Model)) +
+  geom_density(alpha = 0.6, color = "black") +  # alpha for transparency
+  labs(title = "Price Distribution for Not Sold Cars by Model and Year", x = "Price (€)", y = "Density") +
+  theme_minimal() +
+  facet_grid(DatasetYear ~ Model) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(top_3_data %>% filter(Sold.Indicator == "Sold"), aes(x = Price, fill = Model)) +
+  geom_density(alpha = 0.6, color = "black") +
+  labs(title = "Price Distribution for Sold Cars by Model and Year", x = "Price (€)", y = "Count") +
+  theme_minimal() +
+  facet_grid(DatasetYear ~ Model) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(top_3_data, aes(x = Mileage..km., fill = Model)) +
+  geom_density(alpha = 0.6) +
+  labs(title = "Price Density of all Cars by Model and Year", x = "1000 km", y = "Density") +
+  theme_minimal() +
+  facet_grid(DatasetYear ~ Model) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(top_3_data, aes(x = Year, fill = Model)) +
+  geom_density(alpha = 0.6) +
+  labs(title = "Year Density of all Cars by Model and Year", x = "Year of Manufacture", y = "Density") +
+  theme_minimal() +
+  facet_grid(DatasetYear ~ Model) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_continuous(limits = c(0, NA))  # Set the x-axis to start at 0
+
+```
+
+```{r}
+
+simple_lm1 <- lm(Price ~  Year + Mileage..km.+Model , data = combined_data)
+simple_lm3 <- lm(Price ~ Model + poly(Year,2) + poly(Mileage..km.,2), data = combined_data)
+summary(simple_lm3)
+
+plot(simple_lm3)
+summary(simple_lm1)
+
+plot(simple_lm1)
+```
+
+```{r}
+# Filter data for only the most popular models
+popular_models <- c("Golf", "Focus", "Passat")
+filtered_data_popular <- combined_data %>% filter(Model %in% popular_models)
+
+# Add predictions to the filtered data
+filtered_data_popular$Predicted <- predict(simple_lm3, newdata = filtered_data_popular)
+
+# Loop through each popular model and create a plot
+for (model in popular_models) {
+  # Filter data for the current model
+  model_data <- filtered_data_popular %>% filter(Model == model)
+  
+  # Create the plot for the current model
+  plot <- ggplot(model_data, aes(x = Predicted, y = Price)) +
+    geom_point(alpha = 0.5) +  # Scatter plot of predicted vs. actual
+    geom_smooth(method = 'lm', se = FALSE, color = 'black', linetype = 'dashed') +  # Regression line
+    geom_abline(slope = 1, intercept = 0, color = 'red') +  # 45-degree line for perfect prediction
+    labs(title = paste("Predicted vs Actual Price for Model:", model),
+         x = "Predicted Price",
+         y = "Actual Price") +
+    theme_minimal() +
+    theme(legend.position = "none")  # Hide legend if not needed
+  
+  # Print the plot
+  print(plot)
+}
+
+```
+
+
+```{r}
+
+lme_model <- lme(
+    data = combined_data,
+    Price ~ poly(Mileage..km., 3) + poly(Year, 3)+Sold.Indicator,
+    random = ~ 1 | Model/DatasetYear 
+  )
+
+plot(lme_model, type=c("p","smooth"), col.line=1)
+
+plot(lme_model,
+     sqrt(abs(resid(.)))~fitted(.),
+     type=c("p","smooth"), col.line=1)
+
+plot(fitted(lme_model), resid(lme_model), 
+     xlab = "Fitted Values", 
+     ylab = "Residuals", 
+     main = "Residuals vs Fitted")
+abline(h = 0, col = "red")
+qqnorm(resid(lme_model), main = "Normal Q-Q Plot of Residuals")
+qqline(resid(lme_model), col = "red")
+
+
+# Extract random effects
+random_effects <- ranef(lme_model)$Model[, 1]
+
+# Q-Q plot of random effects
+qqnorm(random_effects, main = "Q-Q Plot of Random Effects")
+qqline(random_effects, col = "red")
+
+# Generate predicted values from the lme model
+combined_data$Predicted <- predict(lme_model)
+
+# Create a predicted vs actual plot using ggplot2
+ggplot(combined_data, aes(x = Predicted, y = Price)) +
+  geom_point(alpha = 0.5) +  # Scatter plot of predicted vs actual values
+  geom_smooth(method = 'lm', se = FALSE, color = 'blue', linetype = 'dashed') +  # Fit line
+  geom_abline(slope = 1, intercept = 0, color = 'red') +  # 45-degree line for perfect prediction
+  labs(title = "Predicted vs Actual Price",
+       x = "Predicted Price",
+       y = "Actual Price") +
+  theme_minimal()  # Use a minimal theme for a clean look
+
+```
+
+
+```{r}
+combined_data_difference <- combined_data %>%
+  filter(DatasetYear %in% c(2023, 2024)) %>%  # Ensure data is for both 2023 and 2024
+  group_by(Model) %>%  # Group by Model
+  filter(n_distinct(DatasetYear) == 2) %>%  # Ensure the model has data for both years
+  summarise(
+    mean_price_2023 = mean(Price[DatasetYear == 2023], na.rm = TRUE),
+    mean_price_2024 = mean(Price[DatasetYear == 2024], na.rm = TRUE),
+    price_difference = mean_price_2024 - mean_price_2023,  # Difference in price
+    se_2023 = sd(Price[DatasetYear == 2023], na.rm = TRUE) / sqrt(n()),
+    se_2024 = sd(Price[DatasetYear == 2024], na.rm = TRUE) / sqrt(n()),
+    combined_se = sqrt(se_2023^2 + se_2024^2),  # Combined standard error for the difference
+    ci_lower = price_difference - qt(0.975, df = n() - 1) * combined_se,  # Lower bound of CI
+    ci_upper = price_difference + qt(0.975, df = n() - 1) * combined_se,  # Upper bound of CI
+    # Perform ANOVA for the entire group (for both years)
+    anova_res = list(aov(Price ~ DatasetYear, data = cur_data())),  # Perform ANOVA
+    p_value = tidy(aov(Price ~ DatasetYear, data = cur_data()))$p.value[1]  # Get p-value for the effect of year
+  ) %>%
+  ungroup() %>%
+  filter(
+    !is.na(mean_price_2023) & !is.na(mean_price_2024) & 
+    !is.na(price_difference) & !is.na(se_2023) & !is.na(se_2024) & 
+    !is.na(combined_se) & !is.na(ci_lower) & !is.na(ci_upper)  # Remove rows with NA values
+  )
+
+# View the result with p-values added from ANOVA
+combined_data_difference
+# Remove duplicate columns using base R
+combined_data_difference_cleaned <- combined_data_difference[, !duplicated(colnames(combined_data_difference))]
+combined_data_difference
+
+# Filter models with significant p-values (p_value < 0.05)
+significant_models <- combined_data_difference %>%
+  filter(p_value < 0.05)  # Only keep models where p-value is less than 0.05
+
+# View the significant models
+significant_models
+
+# Order significant models by price_difference (descending order)
+ordered_significant_models <- significant_models %>%
+  arrange(desc(price_difference))  # Order by price_difference, descending
+
+# View the ordered models
+ordered_significant_models
+
+```
+
+```{r}
+
+# Filter the data for selected models (Sportage, S60, Note, Jetta, Focus)
+selected_models <- c("Sportage", "S60", "Note", "Jetta", "Focus")
+
+model_data <- combined_data %>%
+  filter(Model %in% selected_models & DatasetYear %in% c(2023, 2024))
+
+# Create the density plot for each model
+ggplot(model_data, aes(x = Year, fill = factor(DatasetYear), color = factor(DatasetYear))) +
+  geom_density(alpha = 0.5) +  # Density plot with some transparency
+  facet_wrap(~ Model, scales = "free_y") +  # Create a separate plot for each model
+  labs(
+    title = "Density Plot of Year (2023 vs 2024)",
+    x = "Predicted Price",
+    y = "Density",
+    fill = "Year",
+    color = "Year"
+  ) +
+  theme_minimal() +  # Optional: for cleaner look
+  theme(
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 8),
+    strip.text = element_text(size = 12),  # Adjust size of model names
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels
+  ) +
+  scale_fill_manual(values = c("2023" = "blue", "2024" = "red")) +  # Custom fill colors
+  scale_color_manual(values = c("2023" = "blue", "2024" = "red"))  # Custom border colors
+
+
+```
+
+
+```{r}
+combined_data_2023 <- combined_data %>% 
+  mutate(DatasetYear = 2023)  # Set DatasetYear to 2023
+combined_data_2023$PredictedPrice_2023 <- predict(lme_model, newdata = combined_data_2023)
+
+# Step 2: Set all data to 2024 and predict prices
+combined_data_2024 <- combined_data %>% 
+  mutate(DatasetYear = 2024)  # Set DatasetYear to 2024
+combined_data_2024$PredictedPrice_2024 <- predict(lme_model, newdata = combined_data_2024)
+
+# Step 3: Combine the 2023 and 2024 predictions into one data frame with a 'Year' column
+combined_data_predictions <- bind_rows(
+  combined_data_2023 %>% mutate(DatasetYear2 = 2023, PredictedPrice = PredictedPrice_2023),
+  combined_data_2024 %>% mutate(DatasetYear2 = 2024, PredictedPrice = PredictedPrice_2024)
+)
+
+# Step 4: Remove rows with NA values in the PredictedPrice column
+combined_data_predictions <- combined_data_predictions %>%
+  filter(!is.na(PredictedPrice))
+# Load necessary libraries
+
+
+# Factorize DatasetYear2
+combined_data_predictions <- combined_data_predictions %>%
+  mutate(DatasetYear2 = factor(DatasetYear2, levels = c(2023, 2024)))
+
+
+
+# Ensure DatasetYear2 is a factor
+combined_data_predictions <- combined_data_predictions %>%
+  mutate(DatasetYear2 = factor(DatasetYear2, levels = c(2023, 2024)))
+
+# Perform ANOVA for each model without a loop, then extract the p-values
+anova_results <- combined_data_predictions %>%
+  group_by(Model) %>%
+  filter(n_distinct(DatasetYear2) == 2) %>%  # Keep only models with data for both years
+  do(tidy(aov(PredictedPrice ~ DatasetYear2, data = .))) %>%
+  filter(term == "DatasetYear2") %>%  # Filter for the effect of year
+  dplyr::select(Model, p.value) %>%
+  ungroup()
+
+# View the ANOVA results with p-values
+anova_results
+
+# Ensure DatasetYear2 is a factor
+Ensure <- combined_data_predictions %>%
+  mutate(DatasetYear2 = factor(DatasetYear2, levels = c(2023, 2024)))
+
+# Calculate the difference and 95% CI for each model
+ci_results <- combined_data_predictions %>%
+  group_by(Model) %>%
+  filter(n_distinct(DatasetYear2) == 2) %>%  # Keep only models with data for both years
+  summarise(
+    mean_2023 = mean(PredictedPrice[DatasetYear2 == 2023], na.rm = TRUE),
+    mean_2024 = mean(PredictedPrice[DatasetYear2 == 2024], na.rm = TRUE),
+    diff = mean_2024 - mean_2023,  # Difference between the years
+    se = sd(PredictedPrice[DatasetYear2 == 2024], na.rm = TRUE) / sqrt(n()) + 
+         sd(PredictedPrice[DatasetYear2 == 2023], na.rm = TRUE) / sqrt(n()),  # Standard error of the difference
+    ci_lower = diff - qt(0.975, df = n() - 1) * se,  # Lower bound of CI
+    ci_upper = diff + qt(0.975, df = n() - 1) * se   # Upper bound of CI
+  ) %>%
+  ungroup()
+
+# View the results with price differences and confidence intervals
+ci_results <- ci_results %>%
+  left_join(anova_results, by = "Model")  # Join to add p-value for each model
+
+# Rename columns for clarity
+ci_results <- ci_results %>%
+  rename(
+    p_value = p.value  # Rename the joined p-value column for clarity
+  )
+
+# View the final ci_results with the added p-values
+print(ci_results)
+
+significant_ci_results <- ci_results %>%
+  filter(p_value <= 0.05) %>%   # Keep only rows with p-value <= 0.05
+  arrange(desc(diff))           # Order by price difference in descending order
+
+# View the filtered and sorted table
+print(significant_ci_results)
+
+
+
+
+```
+
+```{r}
+# Step 1: Extract residuals from the model
+residuals <- resid(lme_model)
+
+# Step 2: Identify residuals for 'Megane' model
+megane_residuals <- residuals[grep("Megane/2024", names(residuals))]  # Extract Megane residuals
+
+# Step 3: Calculate the standard deviation of residuals for Megane
+megane_residual_sd <- sd(megane_residuals)
+
+# Step 4: Predict the price for Megane/2024
+new_data <- data.frame(
+  Model = "Megane",                # Model name
+  Year = 10,                        # Year of the car
+  Mileage..km. = 152,               # Mileage in kilometers
+  Sold.Indicator = "Not Sold",      # Sold status
+  DatasetYear = 2024                # The dataset year for prediction
+)
+
+# Ensure the factors are correctly defined
+new_data$Sold.Indicator <- factor(new_data$Sold.Indicator, levels = c("Sold", "Not Sold"))
+new_data$Model <- factor(new_data$Model)  # Convert to factor if needed
+
+# Predict the price using the lme model for Megane/2024
+predicted_price <- predict(lme_model, newdata = new_data)
+
+# Step 5: Calculate 95% Confidence Interval
+# Assuming normal distribution, 95% CI = predicted price ± 1.96 * SD of residuals
+lower_ci <- predicted_price - 1.96 * megane_residual_sd
+upper_ci <- predicted_price + 1.96 * megane_residual_sd
+
+# Print the predicted price and confidence interval
+cat("Predicted Price for Megane/2024: ", predicted_price, "\n")
+cat("95% Confidence Interval for Megane/2024: [", lower_ci, ", ", upper_ci, "]\n")
+
+```
+
+```{r}
+combined_data_sold <- combined_data[combined_data$Sold.Indicator == "Sold", ]
+
+# Check the filtered dataset
+head(combined_data_sold)
+
+# Assuming 'combined_data' has the columns Date.Sold and Date.Uploaded
+
+# Convert the Date columns to Date type if they are not already
+combined_data_sold$Date.Sold <- as.Date(combined_data_sold$Date.Sold, format = "%Y-%m-%d")
+combined_data_sold$Date.Uploaded <- as.Date(combined_data_sold$Date.Uploaded, format = "%Y-%m-%d")
+
+# Calculate days to sell by subtracting Date.Uploaded from Date.Sold
+combined_data_sold$days_to_sell <- as.numeric(combined_data_sold$Date.Sold - combined_data_sold$Date.Uploaded)
+
+# Step 1: Fit the Negative Binomial Model (Already done)
+glm_sold_nb <- glm.nb(
+  days_to_sell ~ poly(Price, 2) + poly(Mileage..km., 3) + as.factor(Model) + Year + DatasetYear,
+  data = combined_data_sold
+)
+
+```
+
+
+```{r}
+
+# Make predictions for new data
+new_data <- data.frame(
+  Price = 3110,                   # Example price
+  Mileage..km. = 120,             # Example mileage
+  Model = "Megane",               # Example model
+  Year = 10,                      # Example year
+  DatasetYear = "2024"            # Example dataset year
+)
+
+# Make predictions with the glm model
+predicted_link <- predict(glm_sold_nb, newdata = new_data, se.fit = TRUE)
+
+# Calculate the 95% confidence interval on the link scale
+alpha <- 0.05
+z_score <- qnorm(1 - alpha / 2)  # Z-score for 95% CI
+
+# Lower and upper bounds for the confidence interval (link scale)
+lower_link <- predicted_link$fit - z_score * predicted_link$se.fit
+upper_link <- predicted_link$fit + z_score * predicted_link$se.fit
+
+# Transform the confidence interval from the link scale back to the response scale (predicted days to sell)
+lower_pred <- exp(lower_link)  # Using inverse link (exp for Negative Binomial)
+upper_pred <- exp(upper_link)
+
+# Predicted days to sell and the 95% CI
+predicted_days_to_sell <- exp(predicted_link$fit)
+cat("Predicted Days to Sell: ", predicted_days_to_sell, "\n")
+cat("95% Prediction Interval: [", lower_pred, ", ", upper_pred, "]\n")
+
+
+
+```
