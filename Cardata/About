@@ -1,0 +1,6 @@
+This project focuses on accurately pricing affordable used cars in Ireland, using data collected in 2023 and 2024.
+For detailed insights into the data collection and analysis, please refer to the Car Analysis Report PDF.
+
+Note that the PDF does not include information on machine learning or neural networks, as these are implemented separately in the CarMLNN.ipynb notebook.
+
+Feel free to use or adapt this project as needed.
