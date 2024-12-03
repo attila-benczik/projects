@@ -1,0 +1,690 @@
+---
+title: "Black"
+author: "Attila Benczik"
+date: "11/28/2024"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+blackjack.data <- read.csv("blackjack.csv")
+library(ggplot2)
+source("TeachBayes.r") 
+library(tidyverse)
+library(ggridges)
+library(rjags)
+```
+
+## Aim of This Project
+
+This project aims to test the fairness of the blackjack machines at a local casino, to do this I gathered 420 samples using perfect blackjack strategy. I collected the results of 420 blackjack games, 70 games of 20,30 and 50 cent bets on one machine and then 70 games of 20,30 and 50 cent bets on another machine, this was done to see if a particular machine was rigged or if bet size mattered.
+
+The project concluded that the machines were fair and not biased.
+
+
+## Data and prior description
+The 420 games of blackjack were collected individually by me. Each hand was played with a "blackjack calculator" [https://www.pokernews.com/blackjack-calculator.htm] to avoid personal bias caused by my play style. I took a picture of each blackjack games result and then typed it into a csv, since blackjack payed 1:1 it can be considered a normal hand as on some machines blackjack pays 3:2.
+In the column win.loss represents a win (1) and a loss (0).
+
+$X \sim Bin(n,\theta)$
+
+
+```{r }
+summary(blackjack.data)
+head(blackjack.data)
+```
+
+Upon a surface examination of the data it can be seen that mean of Win.Loss is 0.4333 meaning you are expected to win only 43% of the time.
+
+
+
+## Data and prior description
+
+You can also embed plots, for example:
+
+```{r}
+ggplot(blackjack.data,aes(x=Bet,fill=Win.loss==1))+geom_bar(position = "dodge")
+
+total_wins=sum(blackjack.data$Win.loss)          #finding the number of wins
+total_loss=length(blackjack.data$Win.loss)-total_wins #finding the number of losses
+
+```
+
+
+The graph above shows the count of wins/losses for different bets. It can be seen that there are more losses compared to wins no matter the bet.
+
+
+## Choosing a Prior
+
+
+To calculate a prior I found what the house edge for blackjack is provided that blackjack pays out 1:1, I am expected to win 45.5% of the time. This is what is chose to be the mean of my Prior.
+
+
+
+As Win.loss is binary, a binomial model is suitable for this analysis,$X \sim Bin(n,\theta)$ where $(\theta)$ is equal to the win rate and n is the number of samples and $X|θ∼Bin(n,θ)$ gives the posterior
+
+The conjugate prior of a binomial distribution is a Beta distribution.
+
+To calculate alpha and beta for this prior I used the win rate of fair blackjack as such. Alpha = rounded (100*0.455)+1 and then the beta parameter to be (100-Alpha)+1
+
+
+```{r}
+
+#Calculating prior
+n <- 100          
+p <- 0.455       
+successes <- round(n * p)  
+failures <- n - successes  
+
+# Calculate alpha and beta for the Beta distribution
+
+beta_graph <-c(successes + 1,failures + 1)
+beta_graph
+alpha<-beta_graph[1]
+beta<-beta_graph[2]
+# Display parameters
+cat("Alpha (α):", beta_graph[1], "\nBeta (β):", beta_graph[2], "\n")
+
+# Plot the Beta distribution
+p_seq <- seq(0, 1, length.out = 1000)  # Sequence of p values
+plot(p_seq, dbeta(p_seq, beta_graph[1], beta_graph[2]), type = "l", 
+     main = "Posterior Beta Distribution",
+     xlab = "p", ylab = "Density")
+
+# 95% credible interval
+credible_interval <- qbeta(c(0.025, 0.975),alpha, beta)
+cat("95% Credible Interval:", credible_interval, "\n")
+beta_interval(0.95,c(beta_graph[1],beta_graph[2]))
+```
+##Posterior Distributions.
+###For all the data
+
+
+```{r}
+blackjack_beta <- data.frame(Distribution = c("Prior","Data","Posterior"),BetaShape1=c(beta_graph[1],total_wins,beta_graph[1]+total_wins),BetaShape2=c(beta_graph[2],total_loss,beta_graph[2]+total_loss))
+blackjack_beta
+
+prior_par<-c(beta_graph[1],beta_graph[2])
+data<-c(blackjack_beta$BetaShape1[2],blackjack_beta$BetaShape2[2])
+data
+post_par<-prior_par+data
+beta_prior_post(prior_par,post_par)
+
+
+```
+
+
+The Posterior alpha and beta are calculated by adding the number of successes (total_wins) to the prior alpha and the number of failures onto beta.
+This results in a posterior distribution captured by a beta(a,b) graph with parameters alpha=229 and beta=293
+
+
+Examining the prior posterior plot it can be seen that posterior graph is to the left of the prior, this can indicate that the blackjack machine is not as fair as it should be, however this is not concrete proof, the difference of the post and prior distribution will be examined later in this project
+
+
+
+
+```{r}
+beta_interval(0.95,c(beta_graph[1]+total_wins,beta_graph[2]+total_loss))
+```
+
+
+The true win rate is between 0.396 and 0.481 based on a 95% credible interval of the posterior.
+
+
+```{r}
+set.seed(32)   
+sims<-rbeta(10000,beta_graph[1]+total_wins,beta_graph[2]+total_loss)
+quantile(sims, probs = c(0.025, 0.975))
+
+```
+
+
+The true win rate is between 0.396 and 0.481 based on a 95% credible interval of the simulated posterior.
+
+Prediction
+```{r}
+m<-10
+a<-post_par[1]
+b<-post_par[2]
+pred <- m*a/(a+b)
+pred.var <- (m*a*b*(a+b+m))/((a+b)^2*(a+b+1))
+pred
+pred.var
+```
+
+
+Playing 10 games of blackjack, you are expected to win 4.38 games, with a varience of 2.5 games.
+
+
+As i was also interested if the bet amount or machine had any effect i win rate i made subsets of the data based on these factors.
+
+```{r, echo=FALSE}
+blackjack20.data<-subset(blackjack.data,blackjack.data[5]==20)
+
+blackjack30.data<-subset(blackjack.data,blackjack.data[5]==30)
+
+blackjack50.data<-subset(blackjack.data,blackjack.data[5]==50)
+
+blackjackm1.data<-subset(blackjack.data,blackjack.data[4]==1)
+
+blackjackm2.data<-subset(blackjack.data,blackjack.data[4]==2)
+
+
+blackjackm120.data<-subset(blackjack.data,blackjack.data[4]==1&blackjack.data[5]==20)
+
+blackjackm130.data<-subset(blackjack.data,blackjack.data[4]==1&blackjack.data[5]==30)
+
+blackjackm150.data<-subset(blackjack.data,blackjack.data[4]==1&blackjack.data[5]==50)
+
+
+blackjackm220.data<-subset(blackjack.data,blackjack.data[4]==2&blackjack.data[5]==20)
+
+blackjackm230.data<-subset(blackjack.data,blackjack.data[4]==2&blackjack.data[5]==30)
+
+blackjackm250.data<-subset(blackjack.data,blackjack.data[4]==2&blackjack.data[5]==50)
+
+
+```
+
+
+
+
+```{r}
+
+total_wins20=sum(blackjack20.data$Win.loss)
+total_loss20=length(blackjack20.data$Win.loss)-total_wins20
+
+blackjack_beta20 <- data.frame(Distribution = c("Prior","Data","Posterior"),BetaShape1=c(beta_graph[1],total_wins20,beta_graph[1]+total_wins20),BetaShape2=c(beta_graph[2],total_loss20,beta_graph[2]+total_loss20))
+blackjack_beta20
+
+prior_par<-c(beta_graph[1],beta_graph[2])
+data<-c(blackjack_beta20$BetaShape1[2],blackjack_beta20$BetaShape2[2])
+data
+post_par<-prior_par+data
+beta_prior_post(prior_par,post_par)
+beta_interval(0.95,c(beta_graph[1]+total_wins20,beta_graph[2]+total_loss20))
+```
+
+
+For 20 cent bets, The posterior does not shift it only becomes narrower when compaired with the prior, indicating that theta the true win rate is no different than our prior, with the true win rate for 20 cent bets is between 0.398 and 0.524 based on a 95% credible interval. Analysis of the differences of the posteriors will follow in a later section 
+
+
+```{r}
+set.seed(32)   
+sims20<-rbeta(10000,beta_graph[1]+total_wins20,beta_graph[2]+total_loss20)
+quantile(sims20, probs = c(0.025, 0.975))
+```
+
+
+The simulated credible interval of 20 cent win rate is between 0.398 and 0.523 based on 10000 simulations
+
+
+```{r}
+total_wins30=sum(blackjack30.data$Win.loss)
+total_loss30=length(blackjack30.data$Win.loss)-total_wins30
+
+blackjack_beta30 <- data.frame(Distribution = c("Prior","Data","Posterior"),BetaShape1=c(beta_graph[1],total_wins30,beta_graph[1]+total_wins30),BetaShape2=c(beta_graph[2],total_loss30,beta_graph[2]+total_loss30))
+blackjack_beta30
+
+prior_par<-c(beta_graph[1],beta_graph[2])
+data<-c(blackjack_beta30$BetaShape1[2],blackjack_beta30$BetaShape2[2])
+data
+post_par<-prior_par+data
+beta_prior_post(prior_par,post_par)
+beta_interval(0.95,c(beta_graph[1]+total_wins30,beta_graph[2]+total_loss30))
+```
+
+
+The posterior for 30 cent bets has moved to the left as with the other posteriors previous. The true win rate for 30 cent bets lies between 0.368 and 0.492 based on a 95% credible interval of the posterior 
+
+
+
+```{r}
+set.seed(32)   
+sims30<-rbeta(10000,beta_graph[1]+total_wins30,beta_graph[2]+total_loss30)
+quantile(sims30, probs = c(0.025, 0.975))
+
+
+```
+
+The simulated credible interval of 30 cent win rate is between 0.368 and 0.492 based on 10000 simulations
+
+
+
+```{r}
+total_wins50=sum(blackjack50.data$Win.loss)
+total_loss50=length(blackjack50.data$Win.loss)-total_wins50
+
+blackjack_beta50 <- data.frame(Distribution = c("Prior","Data","Posterior"),BetaShape1=c(beta_graph[1],total_wins50,beta_graph[1]+total_wins50),BetaShape2=c(beta_graph[2],total_loss50,beta_graph[2]+total_loss50))
+blackjack_beta50
+
+prior_par<-c(beta_graph[1],beta_graph[2])
+data<-c(blackjack_beta50$BetaShape1[2],blackjack_beta50$BetaShape2[2])
+data
+post_par<-prior_par+data
+beta_prior_post(prior_par,post_par)
+beta_interval(0.95,c(beta_graph[1]+total_wins50,beta_graph[2]+total_loss50))
+```
+
+For 50 cent bets, The prior only shifted to the left slightly and the true win rate for 20 cent bets is between 0.383 and 0.507 based on a 95% credible interval of the posterior.
+
+
+```{r}
+set.seed(32)   
+sims50<-rbeta(10000,beta_graph[1]+total_wins50,beta_graph[2]+total_loss50)
+quantile(sims50, probs = c(0.025, 0.975))
+```
+
+
+The simulated credible interval of 50 cent win rate is between 0.383 and 0.507 based on 10000 simulations
+
+
+```{r}
+total_winsm1=sum(blackjackm1.data$Win.loss)
+total_lossm1=length(blackjackm1.data$Win.loss)-total_winsm1
+
+blackjack_betam1 <- data.frame(Distribution = c("Prior","Data","Posterior"),BetaShape1=c(beta_graph[1],total_winsm1,beta_graph[1]+total_winsm1),BetaShape2=c(beta_graph[2],total_lossm1,beta_graph[2]+total_lossm1))
+blackjack_betam1
+
+prior_par<-c(beta_graph[1],beta_graph[2])
+data<-c(blackjack_betam1$BetaShape1[2],blackjack_betam1$BetaShape2[2])
+data
+post_par<-prior_par+data
+beta_prior_post(prior_par,post_par)
+beta_interval(0.95,c(beta_graph[1]+total_winsm1,beta_graph[2]+total_lossm1))
+```
+
+
+The posterior for games played on Machine 1 has moved slightly to the left. The true win rate for games on machine 1 lies between 0.38 and 0.489 based on a 95% credible interval of the posterior 
+
+
+
+```{r}
+set.seed(32)   
+simsm1<-rbeta(10000,beta_graph[1]+total_winsm1,beta_graph[2]+total_lossm1)
+quantile(simsm1, probs = c(0.025, 0.975))
+```
+
+
+The simulated credible interval of Machine 1's win rate is between 0.38 and 0.489 based on 10000 simulations
+
+
+```{r}
+total_winsm2=sum(blackjackm2.data$Win.loss)
+total_lossm2=length(blackjackm2.data$Win.loss)-total_winsm2
+
+blackjack_betam2 <- data.frame(Distribution = c("Prior","Data","Posterior"),BetaShape1=c(beta_graph[1],total_winsm2,beta_graph[1]+total_winsm2),BetaShape2=c(beta_graph[2],total_lossm2,beta_graph[2]+total_lossm2))
+blackjack_betam2
+
+prior_par<-c(beta_graph[1],beta_graph[2])
+data<-c(blackjack_betam2$BetaShape1[2],blackjack_betam2$BetaShape2[2])
+data
+post_par<-prior_par+data
+beta_prior_post(prior_par,post_par)
+beta_interval(0.95,c(beta_graph[1]+total_winsm2,beta_graph[2]+total_lossm2))
+```
+
+
+The posterior for games played on Machine 2 has moved to the very slightly to the left. The true win rate for games on machine 2 lies between 0.396 and 0.506 based on a 95% credible interval of the posterior 
+
+
+```{r}
+set.seed(32)   
+simsm2<-rbeta(10000,beta_graph[1]+total_winsm2,beta_graph[2]+total_lossm2)
+quantile(simsm2, probs = c(0.025, 0.975))
+
+```
+
+
+The simulated credible interval of Machine 2's win rate is between 0.396 and 0.5058 based on 10000 simulations
+
+
+###The posteriors for the combinations of bet and machines have been omitted from Knitted file to preserve space
+
+
+```{r, echo=FALSE}
+total_winsm120=sum(blackjackm120.data$Win.loss)
+total_lossm120=length(blackjackm120.data$Win.loss)-total_winsm120
+
+blackjack_betam120 <- data.frame(Distribution = c("Prior","Data","Posterior"),BetaShape1=c(beta_graph[1],total_winsm120,beta_graph[1]+total_winsm120),BetaShape2=c(beta_graph[2],total_lossm120,beta_graph[2]+total_lossm120))
+blackjack_betam120
+
+prior_par<-c(beta_graph[1],beta_graph[2])
+data<-c(blackjack_betam120$BetaShape1[2],blackjack_betam120$BetaShape2[2])
+data
+post_par<-prior_par+data
+beta_prior_post(prior_par,post_par)
+beta_interval(0.95,c(beta_graph[1]+total_winsm120,beta_graph[2]+total_lossm120))
+```
+
+```{r, echo=FALSE}
+set.seed(32)   
+simsm120<-rbeta(10000,beta_graph[1]+total_winsm120,beta_graph[2]+total_lossm120)
+quantile(simsm120, probs = c(0.025, 0.975))
+
+```
+
+```{r, echo=FALSE}
+total_winsm220=sum(blackjackm220.data$Win.loss)
+total_lossm220=length(blackjackm220.data$Win.loss)-total_winsm220
+
+blackjack_betam220 <- data.frame(Distribution = c("Prior","Data","Posterior"),BetaShape1=c(beta_graph[1],total_winsm220,beta_graph[1]+total_winsm220),BetaShape2=c(beta_graph[2],total_lossm220,beta_graph[2]+total_lossm220))
+blackjack_betam220
+
+prior_par<-c(beta_graph[1],beta_graph[2])
+data<-c(blackjack_betam220$BetaShape1[2],blackjack_betam220$BetaShape2[2])
+data
+post_par<-prior_par+data
+beta_prior_post(prior_par,post_par)
+beta_interval(0.95,c(beta_graph[1]+total_winsm220,beta_graph[2]+total_lossm220))
+```
+
+```{r, echo=FALSE}
+set.seed(32)   
+simsm220<-rbeta(10000,beta_graph[1]+total_winsm220,beta_graph[2]+total_lossm220)
+quantile(simsm220, probs = c(0.025, 0.975))
+
+```
+
+```{r, echo=FALSE}
+total_winsm130=sum(blackjackm130.data$Win.loss)
+total_lossm130=length(blackjackm130.data$Win.loss)-total_winsm130
+
+blackjack_betam130 <- data.frame(Distribution = c("Prior","Data","Posterior"),BetaShape1=c(beta_graph[1],total_winsm130,beta_graph[1]+total_winsm130),BetaShape2=c(beta_graph[2],total_winsm130,beta_graph[2]+total_winsm130))
+blackjack_betam130
+
+prior_par<-c(beta_graph[1],beta_graph[2])
+data<-c(blackjack_betam130$BetaShape1[2],blackjack_betam130$BetaShape2[2])
+data
+post_par<-prior_par+data
+beta_prior_post(prior_par,post_par)
+beta_interval(0.95,c(beta_graph[1]+total_winsm130,beta_graph[2]+total_winsm130))
+```
+
+```{r, echo=FALSE}
+set.seed(32)   
+simsm130<-rbeta(10000,beta_graph[1]+total_winsm130,beta_graph[2]+total_lossm130)
+quantile(simsm130, probs = c(0.025, 0.975))
+
+```
+
+```{r, echo=FALSE}
+total_winsm230=sum(blackjackm230.data$Win.loss)
+total_lossm230=length(blackjackm230.data$Win.loss)-total_winsm230
+
+blackjack_betam230 <- data.frame(Distribution = c("Prior","Data","Posterior"),BetaShape1=c(beta_graph[1],total_winsm230,beta_graph[1]+total_winsm230),BetaShape2=c(beta_graph[2],total_lossm230,beta_graph[2]+total_lossm230))
+blackjack_betam230
+
+prior_par<-c(beta_graph[1],beta_graph[2])
+data<-c(blackjack_betam230$BetaShape1[2],blackjack_betam230$BetaShape2[2])
+data
+post_par<-prior_par+data
+beta_prior_post(prior_par,post_par)
+beta_interval(0.95,c(beta_graph[1]+total_winsm230,beta_graph[2]+total_lossm230))
+```
+
+```{r, echo=FALSE}
+set.seed(32)   
+simsm230<-rbeta(10000,beta_graph[1]+total_winsm230,beta_graph[2]+total_lossm230)
+quantile(simsm230, probs = c(0.025, 0.975))
+
+```
+
+```{r, echo=FALSE}
+total_winsm150=sum(blackjackm150.data$Win.loss)
+total_lossm150=length(blackjackm150.data$Win.loss)-total_winsm150
+
+blackjack_betam150 <- data.frame(Distribution = c("Prior","Data","Posterior"),BetaShape1=c(beta_graph[1],total_winsm150,beta_graph[1]+total_winsm150),BetaShape2=c(beta_graph[2],total_lossm150,beta_graph[2]+total_lossm150))
+blackjack_betam150
+
+prior_par<-c(beta_graph[1],beta_graph[2])
+data<-c(blackjack_betam150$BetaShape1[2],blackjack_betam150$BetaShape2[2])
+data
+post_par<-prior_par+data
+beta_prior_post(prior_par,post_par)
+beta_interval(0.95,c(beta_graph[1]+total_winsm150,beta_graph[2]+total_lossm150))
+```
+
+```{r, echo=FALSE}
+set.seed(32)   
+simsm150<-rbeta(10000,beta_graph[1]+total_winsm150,beta_graph[2]+total_lossm150)
+quantile(simsm150, probs = c(0.025, 0.975))
+
+```
+
+```{r, echo=FALSE}
+total_winsm250=sum(blackjackm250.data$Win.loss)
+total_lossm250=length(blackjackm250.data$Win.loss)-total_winsm250
+
+blackjack_betam250 <- data.frame(Distribution = c("Prior","Data","Posterior"),BetaShape1=c(beta_graph[1],total_winsm250,beta_graph[1]+total_winsm250),BetaShape2=c(beta_graph[2],total_lossm250,beta_graph[2]+total_lossm250))
+blackjack_betam250
+
+prior_par<-c(beta_graph[1],beta_graph[2])
+data<-c(blackjack_betam250$BetaShape1[2],blackjack_betam250$BetaShape2[2])
+data
+post_par<-prior_par+data
+beta_prior_post(prior_par,post_par)
+beta_interval(0.95,c(beta_graph[1]+total_winsm250,beta_graph[2]+total_lossm250))
+```
+
+```{r, echo=FALSE}
+set.seed(32)   
+simsm250<-rbeta(10000,beta_graph[1]+total_winsm250,beta_graph[2]+total_lossm250)
+quantile(simsm250, probs = c(0.025, 0.975))
+
+```
+
+```{r, echo=FALSE}
+set.seed(32)   
+simsprior<-rbeta(10000,beta_graph[1],beta_graph[2])
+quantile(simsprior, probs = c(0.025, 0.975))
+
+```
+
+
+```{r}
+diff_p<-sims-simsprior
+
+diff_p2030<-sims20-sims30
+diff_p2050<-sims20-sims50
+diff_p3050<-sims30-sims50
+diff_m1m2<-simsm1-simsm2
+
+diff_m120m220<-simsm120-simsm220
+diff_m120m230<-simsm120-simsm230
+diff_m120m250<-simsm120-simsm250
+
+diff_m130m220<-simsm130-simsm230
+diff_m130m230<-simsm130-simsm230
+diff_m130m250<-simsm130-simsm230
+
+diff_m150m220<-simsm150-simsm220
+diff_m150m230<-simsm150-simsm230
+diff_m150m250<-simsm150-simsm250
+
+
+```
+
+```{r}
+print("95% confidence interval for the difference of data and prior.")
+quantile(diff_p, probs = c(0.025, 0.975))
+
+
+print("95% confidence interval for the difference of 20 cent bets and 30 cent bets.")
+quantile(diff_p2030, probs = c(0.025, 0.975))
+print("95% confidence interval for the difference of 20 cent bets and 50 cent bets.")
+quantile(diff_p2050, probs = c(0.025, 0.975))
+print("95% confidence interval for the difference of 30 cent bets and 50 cent bets.")
+quantile(diff_p3050, probs = c(0.025, 0.975))
+print("95% confidence interval for the difference of machine 1 and machine 2.")
+quantile(diff_m1m2, probs = c(0.025, 0.975))
+
+print("95% confidence interval for the difference of machine 1 20 cent bets and machine 2 20 cent bets.")
+quantile(diff_m120m220, probs = c(0.025, 0.975))
+print("95% confidence interval for the difference of machine 1 20 cent bets and machine 2 30 cent bets.")
+quantile(diff_m120m230, probs = c(0.025, 0.975))
+print("95% confidence interval for the difference of machine 1 20 cent bets and machine 2 50 cent bets.")
+quantile(diff_m120m250, probs = c(0.025, 0.975))
+
+print("95% confidence interval for the difference of machine 1 30 cent bets and machine 2 20 cent bets.")
+quantile(diff_m130m220, probs = c(0.025, 0.975))
+print("95% confidence interval for the difference of machine 1 30 cent bets and machine 2 30 cent bets.")
+quantile(diff_m130m230, probs = c(0.025, 0.975))
+print("95% confidence interval for the difference of machine 1 30 cent bets and machine 2 50 cent bets.")
+quantile(diff_m130m250, probs = c(0.025, 0.975))
+
+print("95% confidence interval for the difference of machine 1 50 cent bets and machine 2 20 cent bets.")
+quantile(diff_m150m220, probs = c(0.025, 0.975))
+print("95% confidence interval for the difference of machine 1 50 cent bets and machine 2 30 cent bets.")
+quantile(diff_m150m230, probs = c(0.025, 0.975))
+print("95% confidence interval for the difference of machine 1 50 cent bets and machine 2 50 cent bets.")
+quantile(diff_m150m250, probs = c(0.025, 0.975))
+```
+
+
+The posterior simulated mean difference for the Posterior of the whole data and Prior is between -0.126 and 0.081 with a probability 0.95.
+
+
+This doesn't give any evidence that the Blackjack machine is unfair, as 0 is contained inside the 95% confidence interval.
+
+
+```{r}
+plot(density(diff_p),type='l')
+
+plot(density(diff_p2030),type='l')
+plot(density(diff_p2050),type='l')
+plot(density(diff_p3050),type='l')
+plot(density(diff_m1m2),type='l')
+
+plot(density(diff_m120m220),type='l')
+plot(density(diff_m120m230),type='l')
+plot(density(diff_m120m250),type='l')
+
+plot(density(diff_m130m220),type='l')
+plot(density(diff_m130m230),type='l')
+plot(density(diff_m130m250),type='l')
+
+plot(density(diff_m150m220),type='l')
+plot(density(diff_m150m230),type='l')
+plot(density(diff_m150m250),type='l')
+```
+
+A plot of the simulated results reveal that most seem to be normally distributed around 0, meaning that there is no evidence that there is a difference between the different bets and differnt machines. However when looking at the density plots there are a few oddities,such as the difference between 20cent and 50cent bets where there is a very noticable spike around 0.0015, which suggests that there is a very small differnece between 20cent bets and 50 cent bets, which indicates that 20cent bets on average pay back more than 50cent bets. this was missed by our confidence interval on the simulated posteriors.
+This is also true when examining the results of the differnce between 20 cent and 50 cent bets on machine 1 and machine 2, where it can be seen that the spike in density is slightly to the right.
+Since the 95% confidence interval does not pick up this difference, it would be worth gathering more data on 20 cent and 50 cent bets on machince 1 and 2 to so if there is truly a significent difference.
+
+
+
+
+#Modeling with MCMC
+
+
+
+```{r}
+
+X[i]~dnorm(theta)
+
+bmodel<-"model{
+  X~dbin(theta,n)
+  theta~dbeta(92,110)
+}"
+
+```
+
+```{r}
+bjags<-jags.model(textConnection(bmodel),data=list(X=182,n=420),inits=list(theta=p),n.chains=5)
+```
+
+```{r}
+bsim<-update(bjags,n.iter=10000)
+bsim<-coda.samples(model=bjags,variable.names = c("theta"),n.iter=15000)
+```
+
+```{r}
+plot(bsim,trace = F)
+plot(bsim,density = F)
+summary(bsim[[1]])
+```
+
+The Density of theta plot is normally distributed and its trace plot doesn't have any patterns, which shows that the model is good to use.
+
+The simulated mean of the win rate theta is 0.440 with a standard deviation of 0.0198
+
+```{r}
+b_df<-data.frame(bsim[[1]])
+ci95<-quantile(b_df$theta,c(0.025,0.975))
+ggplot(b_df,aes(x=theta))+geom_density()+geom_vline(xintercept = ci95)
+ci95
+```
+
+
+The 95% credible interval for the true winrate in the rjags model is between 0.402 and 0.4793. Since the our prior win rate is 0.455 which is inside this interval, we have no evidence that the win rate is different.
+
+
+```{r}
+gelman.diag(bsim)
+gelman.plot(bsim)
+```
+
+
+Gelman and Rubin plot shows that the chains have converged. This is backed up by the Potential scale reduction factor which is 1 for theta.
+
+
+
+```{r}
+log.b<-"model{
+  for(i in 1:length(Y)){
+    Y[i]~dbern(theta[i])
+    logit(theta[i])<-a+b*X1[i]+c*X2[i]
+  }
+  a~dnorm(0,5^(-2))
+  b~dnorm(0,5^(-2))
+  c~dnorm(0,5^(-2))
+  or.bet<-exp(b)
+  or.machine<-exp(c)
+  
+}
+"
+
+```
+
+```{r}
+log.b<-jags.model(textConnection(log.b),data=list(Y=blackjack.data$Win.loss,X1=blackjack.data$Bet,X2=blackjack.data$Machine),n.chains=5)
+
+
+```
+
+```{r}
+log.bsim<-update(log.b,n.iter=15000)
+```
+
+```{r}
+log.bsim<-coda.samples(model=log.b,variable.names=c("a","b","c","or.bet","or.machine"),n.iter=50000,thin=10)
+```
+
+```{r}
+plot(log.bsim[,])
+gelman.diag(bsim)
+gelman.plot(bsim)
+```
+
+
+The Density plot are normally distributed and the trace plots dont show any patterns meaning the model is good.
+The chains have converged as the Gelman-Rubin statistic is 1
+
+
+
+```{r}
+summary(log.bsim)[1]
+summary(log.bsim)[2]
+```
+
+The odds of bet changing the Win rate according to a MCMC Logistic GLM is 0.9897 with a 95% CI of 0.981 and 1.0127. as 1 is in the interval there is no evidence of the bet changing the win rate 
+
+The odds of the machine chaining the win rate is 1.122 with a 95%CI of 0.748 and 1.622. as 1 is in the interval there is no evidence that the Machine has any effect of the Win Rate.
+
+
+#Conclusion
+
+Through Bayesian Analysis it can be concluded that the Blackjack machines are fair with the exception very slight indications that 20 cent and 50 cent games have different win rates, However these differences are so small that it is possible that they were just chance. To investigate this further the sample size of 20 cent and 50 cent games should be increase on both machine 1 and 2. 
+
