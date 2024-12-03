@@ -1,1 +1,6 @@
+This project aims to test the fairness of the blackjack machines at a local casino, to do this I gathered 420 samples using perfect blackjack strategy. 
+I collected the results of 420 blackjack games, 70 games of 20,30 and 50 cent bets on one machine and then 70 games of 20,30 and 50 cent bets on another machine, 
+this was done to see if a particular machine was rigged or if bet size mattered.
 
+
+The project concluded that it's very likely that the machines are fair and not biased.
